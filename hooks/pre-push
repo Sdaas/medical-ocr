@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+#
+# pre-push hook — block the push if the test suite fails.
+# Installed by ./install-hooks.sh.
+
+set -uo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+echo "pre-push: running ./test.sh ..."
+if ! "$REPO_ROOT/test.sh"; then
+	echo "pre-push: tests failed — push aborted. Use 'git push --no-verify' to override." >&2
+	exit 1
+fi
+echo "pre-push: tests passed — proceeding."
+exit 0

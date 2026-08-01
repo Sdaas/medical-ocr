@@ -1,0 +1,6 @@
+# temp / scratch
+*.tmp
+.DS_Store
+
+# local env
+.env
