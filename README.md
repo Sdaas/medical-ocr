@@ -43,6 +43,29 @@ On other platforms `setup.sh` reports what to install by hand.
 <!-- How an end user runs and uses medical-ocr. Filled in as features land. -->
 Run `medical-ocr --help` for usage.
 
+### `vlm-read` — extract via a VLM
+
+Send an image to a named vision model and write an extraction envelope JSON:
+
+```bash
+vlm-read sample-data/00.jpg ollama/llava
+```
+
+The envelope is written under a top-level `output/` tree mirroring the image's
+location — e.g. `output/sample-data/00.vlm.ollama-llava.json`.
+
+**Today only local [Ollama](https://ollama.com) models are supported**
+(`ollama/<model>`); cloud providers are tracked in issue #5. Before running:
+
+```bash
+ollama serve            # start the local server (if not already running)
+ollama pull llava       # pull the vision model you want to use
+```
+
+`vlm-read` preflights both — if the server is down or the model isn't pulled, it
+tells you exactly what to run. Point at a non-default server with
+`OLLAMA_API_BASE`. See `vlm-read --help` for all options.
+
 ## Developer Guide
 
 <!-- Layout, how to add a feature, conventions. See design/overview.md. -->
