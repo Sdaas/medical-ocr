@@ -10,10 +10,11 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Soumendra Daas" }]
-dependencies = []
+dependencies = ["litellm>=1.0"]
 
 [project.scripts]
 medical-ocr = "medical_ocr.cli:main"
+vlm-read = "medical_ocr.vlm_read:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6"]
