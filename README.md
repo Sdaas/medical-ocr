@@ -84,6 +84,18 @@ ollama pull llava       # pull the vision model you want to use
 tells you exactly what to run. Point at a non-default server with
 `OLLAMA_API_BASE`. See `vlm-read --help` for all options.
 
+#### Context window (`--num-ctx`) and reasoning models
+
+A photo can cost thousands of input tokens, and Ollama's default context window
+is small — so a large image can overflow it and the model gets cut off before it
+answers, leaving an empty result. `vlm-read` therefore raises the window to a
+generous default; override it with `--num-ctx` if you still see truncation
+(`vlm-read` warns when a reply is cut off). *Reasoning* models (e.g. `qwen3-vl`)
+"think" before answering and need this headroom most — their thinking is kept in
+`raw_text` if they run out of room before writing a final answer, so nothing is
+lost. Notes on the models tested so far live in
+[`docs/retrospectives/2026-08-02-vlm-read-bugs.md`](docs/retrospectives/2026-08-02-vlm-read-bugs.md).
+
 ## Developer Guide
 
 <!-- Layout, how to add a feature, conventions. See design/overview.md. -->

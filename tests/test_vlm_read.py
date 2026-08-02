@@ -308,3 +308,87 @@ def test_main_api_error_exits_1_no_envelope(tmp_path, monkeypatch, ollama_ok, ca
     assert rc == 1
     assert not (root / "sample-data" / "scan.vlm.ollama-llava.json").exists()
     assert capsys.readouterr().err  # some diagnostic
+
+
+# --------------------------------------------------------------------------- #
+# Context window & reasoning capture (issue #9)
+#
+# The default Ollama context window is tiny; a large image overflows it and the
+# model is cut off (finish_reason "length") before answering — yielding an empty
+# raw_text. vlm-read must raise num_ctx, warn on truncation, and never drop a
+# reasoning-only answer.
+# --------------------------------------------------------------------------- #
+
+
+def full_response(content, reasoning=None, finish_reason="stop"):
+    """A litellm-style response carrying finish_reason and reasoning_content."""
+    message = SimpleNamespace(content=content, reasoning_content=reasoning)
+    return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason=finish_reason)])
+
+
+def test_main_passes_default_num_ctx(tmp_path, monkeypatch, ollama_ok):
+    img = make_image(tmp_path)
+    rc, calls = run(
+        [str(img), "ollama/llava", "--base", str(tmp_path), "--output-root", str(tmp_path / "o")],
+        monkeypatch,
+    )
+    assert rc == 0
+    # the context window is forwarded to Ollama so image + answer fit
+    assert calls[0]["num_ctx"] == vlm_read.DEFAULT_NUM_CTX
+
+
+def test_main_num_ctx_override(tmp_path, monkeypatch, ollama_ok):
+    img = make_image(tmp_path)
+    rc, calls = run(
+        [
+            str(img),
+            "ollama/llava",
+            "--num-ctx",
+            "4096",
+            "--base",
+            str(tmp_path),
+            "--output-root",
+            str(tmp_path / "o"),
+        ],
+        monkeypatch,
+    )
+    assert rc == 0
+    assert calls[0]["num_ctx"] == 4096
+
+
+def test_main_warns_when_truncated(tmp_path, monkeypatch, ollama_ok, capsys):
+    img = make_image(tmp_path)
+
+    def completion(**kwargs):
+        return full_response('{"a": 1}', finish_reason="length")
+
+    rc, _ = run(
+        [str(img), "ollama/llava", "--base", str(tmp_path), "--output-root", str(tmp_path / "o")],
+        monkeypatch,
+        completion=completion,
+    )
+    assert rc == 0
+    err = capsys.readouterr().err.lower()
+    assert "num_ctx" in err or "truncat" in err  # told the user why/what to do
+
+
+def test_main_falls_back_to_reasoning_when_content_empty(tmp_path, monkeypatch, ollama_ok, capsys):
+    img = make_image(tmp_path)
+    root = tmp_path / "o"
+    reasoning = '{"patient_name": "Jane"}'
+
+    def completion(**kwargs):
+        # A reasoning model that spent its budget thinking: empty content, but the
+        # answer is recoverable from reasoning_content.
+        return full_response("", reasoning=reasoning, finish_reason="length")
+
+    rc, _ = run(
+        [str(img), "ollama/llava", "--base", str(tmp_path), "--output-root", str(root)],
+        monkeypatch,
+        completion=completion,
+    )
+    assert rc == 0
+    env = json.loads((root / "sample-data" / "scan.vlm.ollama-llava.json").read_text())
+    assert env["raw_text"] == reasoning  # nothing lost
+    assert env["fields"] == {"patient_name": "Jane"}
+    assert "reasoning" in capsys.readouterr().err.lower()  # warned about the fallback

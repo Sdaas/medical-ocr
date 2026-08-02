@@ -34,6 +34,14 @@ from medical_ocr.common import Envelope, Timer, write_envelope
 # Deferred cloud-provider work (Anthropic/OpenAI/Gemini) lives in this issue.
 CLOUD_ISSUE = "#5"
 
+# Ollama's default context window (num_ctx) is only 2048 tokens. A photo can eat
+# ~3000 input tokens on its own, so with the default the prompt+image alone can
+# overflow the window — and a *reasoning* model (qwen3-vl, …) then spends what
+# little is left on its private "thinking" and gets cut off (finish_reason
+# "length") before writing any answer to `content`. We raise the window so there
+# is room for the image, the reasoning, and the answer.
+DEFAULT_NUM_CTX = 16384
+
 # Starter field set (ADR-0002 example). Suggested, not enforced — the model may
 # add or omit keys; scoring and other backends converge on these names.
 PROMPT = """\
@@ -230,6 +238,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="dir image paths are mirrored under in output/ (default: cwd)",
     )
+    parser.add_argument(
+        "--num-ctx",
+        type=int,
+        default=DEFAULT_NUM_CTX,
+        help=(
+            "Ollama context window in tokens (default: %(default)s). Raise it if "
+            "output is truncated on large images or reasoning models."
+        ),
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="verbose output")
     return parser
 
@@ -248,12 +265,42 @@ def _run(args: argparse.Namespace) -> None:
     try:
         with Timer() as timer:
             # Pin the endpoint to the one preflight verified, so LiteLLM's own
-            # default can't route the call to a different Ollama server.
-            response = completion(model=args.model, messages=messages, api_base=_ollama_base())
+            # default can't route the call to a different Ollama server. num_ctx
+            # is forwarded to Ollama so the window fits image + reasoning + answer.
+            response = completion(
+                model=args.model,
+                messages=messages,
+                api_base=_ollama_base(),
+                num_ctx=args.num_ctx,
+            )
     except Exception as exc:  # noqa: BLE001 — surface any provider error as exit 1
         raise VlmReadError(f"model call failed for {args.model}: {exc}", code=1) from exc
 
-    raw_text = response.choices[0].message.content or ""
+    choice = response.choices[0]
+    raw_text = choice.message.content or ""
+    # Reasoning models put their "thinking" here; LiteLLM surfaces it separately.
+    reasoning = getattr(choice.message, "reasoning_content", None) or ""
+
+    # If the model was cut off (finish_reason "length"), the answer is likely
+    # truncated or — for a reasoning model that never got to answer — empty.
+    if getattr(choice, "finish_reason", None) == "length":
+        print(
+            f"vlm-read: warning: response hit the context limit (num_ctx={args.num_ctx}); "
+            "output may be truncated — retry with a larger --num-ctx.",
+            file=sys.stderr,
+        )
+
+    # Never lose the model's output: if it answered only in its reasoning channel,
+    # fall back to that so raw_text is not silently empty (honours this module's
+    # "the full reply is always kept in raw_text" promise).
+    if not raw_text and reasoning:
+        print(
+            "vlm-read: warning: model returned an empty answer but non-empty reasoning; "
+            "keeping the reasoning as raw_text.",
+            file=sys.stderr,
+        )
+        raw_text = reasoning
+
     fields = _parse_fields(raw_text)
     if fields is None:
         print(
