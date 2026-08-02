@@ -4,8 +4,11 @@
 (ADR-0001), times it, and writes an ADR-0002 envelope through `common`. For now
 only local Ollama models are supported; cloud providers are stubbed (issue #5).
 
-All tests are hermetic: `litellm.completion` and the Ollama `/api/tags` lookup
-are stubbed, so no network call or real model is ever touched.
+Nearly all tests are hermetic: `litellm.completion` and the Ollama `/api/tags`
+lookup are stubbed, so no network call or real model is ever touched. The one
+exception is `test_data_uri_survives_real_ollama_image_conversion`, which drives
+litellm's real (local, offline) image-conversion to guard the Pillow dependency
+(#7).
 """
 
 from __future__ import annotations
@@ -110,6 +113,33 @@ def test_image_data_uri_jpeg(tmp_path):
 def test_image_data_uri_png(tmp_path):
     img = make_image(tmp_path, "scan.png")
     assert vlm_read._image_data_uri(img).startswith("data:image/png;base64,")
+
+
+# A minimal valid 1x1 PNG — real image bytes so litellm's PIL decode path
+# actually runs (fake bytes would hit its fallback branch instead).
+_TINY_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9"
+    "awAAAABJRU5ErkJggg=="
+)
+
+
+def test_data_uri_survives_real_ollama_image_conversion(tmp_path):
+    """Regression for #7: the data URI we build must pass through litellm's REAL
+    Ollama image-conversion (which needs Pillow) without raising.
+
+    This is deliberately *not* hermetic — it drives litellm's actual
+    `_convert_image` (the code every other test mocks past). Without Pillow
+    declared as a dependency it raises `ollama image conversion failed ...`;
+    with it, the base64 payload comes back. Guards the transitive runtime dep.
+    """
+    from litellm.llms.ollama.common_utils import _convert_image
+
+    img = tmp_path / "tiny.png"
+    img.write_bytes(_TINY_PNG)
+    data_uri = vlm_read._image_data_uri(img)
+
+    result = _convert_image(data_uri)
+    assert result and isinstance(result, str)
 
 
 # --------------------------------------------------------------------------- #

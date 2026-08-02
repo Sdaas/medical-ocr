@@ -10,7 +10,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Soumendra Daas" }]
-dependencies = ["litellm>=1.0"]
+# Pillow is required at runtime: litellm's Ollama provider decodes every image
+# through PIL (an optional transitive dep of litellm), so we must declare it.
+dependencies = ["litellm>=1.0", "Pillow>=10"]
 
 [project.scripts]
 medical-ocr = "medical_ocr.cli:main"
