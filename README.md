@@ -43,6 +43,24 @@ On other platforms `setup.sh` reports what to install by hand.
 <!-- How an end user runs and uses medical-ocr. Filled in as features land. -->
 Run `medical-ocr --help` for usage.
 
+### Running the CLI commands
+
+`medical-ocr` and `vlm-read` are console-script entry points installed into the
+project's virtualenv (`.venv/`) by `setup.sh` — they are **not** standalone files
+in the repo. They only appear on your `PATH` once that venv is active. Pick one:
+
+```bash
+source .venv/bin/activate    # activate the venv, then commands are on PATH
+vlm-read --help
+
+# or, without activating:
+.venv/bin/vlm-read --help    # call the launcher directly
+uv run vlm-read --help       # run through uv
+```
+
+(`./test.sh` works without activation because pytest imports from `src/`
+directly — that path never creates the `vlm-read` launcher.)
+
 ### `vlm-read` — extract via a VLM
 
 Send an image to a named vision model and write an extraction envelope JSON:
