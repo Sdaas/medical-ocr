@@ -1,0 +1,5 @@
+# Machine-generated backend outputs (envelopes, score files) live here and are
+# never committed. This file keeps the directory itself in the repo so users
+# don't have to create it by hand, while ignoring everything else in it.
+*
+!.gitignore

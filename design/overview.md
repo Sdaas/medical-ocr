@@ -29,6 +29,7 @@ Fully specified upstream — see the source of truth:
 - **Ground-truth sidecar `<image>.truth.json`** (ADR-0003) — automatic image↔truth pairing; `--truth` override for exceptions.
 - **Normalized exact-match, field-level scoring** (ADR-0004) — honors the stated requirement while removing false negatives from formatting noise; fuzzy is a future opt-in.
 - **`common` is the contract** — new backends only need to "produce an envelope JSON."
+- **Output-path convention (C8)** — machine outputs go to a top-level, gitignored `output/` tree that mirrors the image's location: `output/<image_parent>/<stem>.<technique>[.<model>].json` (model omitted for pure OCR, filesystem-unsafe chars sanitized). One disposable, never-committed root cleanly separates generated files from the **committed** curated inputs; multiple backends/models never collide. Ground-truth sidecars (`<image>.truth.json`) stay next to the image per ADR-0003 and **are** committed. The `output/` dir is kept in the repo (via a self-ignoring `output/.gitignore`) so users never create it by hand.
 
 ## Constraints
 
