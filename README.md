@@ -72,6 +72,20 @@ vlm-read sample-data/00.jpg ollama/llava
 The envelope is written under a top-level `output/` tree mirroring the image's
 location — e.g. `output/sample-data/00.vlm.ollama-llava.json`.
 
+A default run makes **two focused VLM calls** into one envelope:
+
+- **transcribe** → `raw_text`: a faithful plain-text read of *everything on the
+  note* ("what the VLM sees").
+- **extract** → `fields`: the ADR-0002 structured extraction ("what our schema
+  captured").
+
+Comparing the two makes a missing field diagnosable: text present in `raw_text`
+but absent from `fields` is a *schema* gap; absent from both is a *perception*
+gap. Each call is timed separately under `durations`; `duration_sec` is the
+total. Pass `--no-transcribe` to make a single extraction call (then `raw_text`
+is empty unless the extraction reply fails to parse, in which case the reply is
+kept there so nothing is lost).
+
 **Today only local [Ollama](https://ollama.com) models are supported**
 (`ollama/<model>`); cloud providers are tracked in issue #5. Before running:
 
@@ -90,10 +104,10 @@ A photo can cost thousands of input tokens, and Ollama's default context window
 is small — so a large image can overflow it and the model gets cut off before it
 answers, leaving an empty result. `vlm-read` therefore raises the window to a
 generous default; override it with `--num-ctx` if you still see truncation
-(`vlm-read` warns when a reply is cut off). *Reasoning* models (e.g. `qwen3-vl`)
-"think" before answering and need this headroom most — their thinking is kept in
-`raw_text` if they run out of room before writing a final answer, so nothing is
-lost. Notes on the models tested so far live in
+(`vlm-read` warns when a reply is cut off, naming which call). *Reasoning* models
+(e.g. `qwen3-vl`) "think" before answering and need this headroom most — if a call
+runs out of room before writing a final answer, its thinking is kept (as that
+call's text) so nothing is lost. Notes on the models tested so far live in
 [`docs/retrospectives/2026-08-02-vlm-read-bugs.md`](docs/retrospectives/2026-08-02-vlm-read-bugs.md).
 
 ## Developer Guide

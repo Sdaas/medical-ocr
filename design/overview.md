@@ -26,6 +26,7 @@ Fully specified upstream — see the source of truth:
 - Stack profile: python (cli); distribution: none.
 - **VLM invocation via LiteLLM gateway** (ADR-0001) — adding a model to evaluate is a one-string change; same code path for local Ollama and cloud APIs.
 - **Hybrid extraction envelope** (ADR-0002) — fixed metadata + `raw_text` + open `fields` dict; all three backends can fill it without locking a medical taxonomy.
+- **VLM = two calls, one envelope** (ADR-0002 / #13) — `vlm-read` *transcribes* (plain-text "what the VLM sees" → `raw_text`) then *extracts* (structured → `fields`), so a missing field is diagnosable as a schema vs. perception gap; `--no-transcribe` reverts to extract-only. Per-call times in `durations`, total in `duration_sec`.
 - **Ground-truth sidecar `<image>.truth.json`** (ADR-0003) — automatic image↔truth pairing; `--truth` override for exceptions.
 - **Normalized exact-match, field-level scoring** (ADR-0004) — honors the stated requirement while removing false negatives from formatting noise; fuzzy is a future opt-in.
 - **`common` is the contract** — new backends only need to "produce an envelope JSON."

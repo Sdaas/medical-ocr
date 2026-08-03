@@ -44,15 +44,43 @@ def ollama_ok(monkeypatch):
     monkeypatch.setattr(vlm_read, "_ollama_models", lambda base: ["llava:latest"])
 
 
+def _is_transcribe_call(kwargs) -> bool:
+    """True if this completion call carries the transcribe prompt (vs extract)."""
+    return "transcribe" in json.dumps(kwargs["messages"]).lower()
+
+
+def two_call(transcribe="Plain-text transcription of the note.", extract="{}"):
+    """Completion stub returning distinct replies for the transcribe vs extract call.
+
+    Keys off the prompt text so it works regardless of call order or whether the
+    transcribe call happens at all (``--no-transcribe``).
+    """
+
+    def _completion(**kwargs):
+        return fake_response(transcribe if _is_transcribe_call(kwargs) else extract)
+
+    return _completion
+
+
 def run(argv, monkeypatch, content=None, completion=None):
-    """Run main() with `completion` stubbed; return (rc, calls)."""
+    """Run main() with `completion` stubbed; return (rc, calls).
+
+    With no explicit `completion`, every call returns `content` (default "{}").
+    Pass `completion=two_call(...)` to give the transcribe and extract calls
+    distinct replies.
+    """
     calls = []
 
     def default_completion(**kwargs):
-        calls.append(kwargs)
         return fake_response(content if content is not None else "{}")
 
-    monkeypatch.setattr(vlm_read, "completion", completion or default_completion)
+    inner = completion or default_completion
+
+    def recording(**kwargs):
+        calls.append(kwargs)
+        return inner(**kwargs)
+
+    monkeypatch.setattr(vlm_read, "completion", recording)
     rc = vlm_read.main(argv)
     return rc, calls
 
@@ -175,16 +203,17 @@ def test_model_present_absent():
 # --------------------------------------------------------------------------- #
 
 
-def test_main_writes_envelope_with_parsed_fields(tmp_path, monkeypatch, ollama_ok):
+def test_main_default_two_calls_transcribe_then_extract(tmp_path, monkeypatch, ollama_ok):
+    """Default run: call 1 transcribes → raw_text; call 2 extracts → fields."""
     img = make_image(tmp_path)
     root = tmp_path / "output"
     fields = {"patient_name": "Jane Doe", "medications": [{"name": "amoxicillin"}]}
-    content = json.dumps(fields)
+    transcription = "Patient: Jane Doe\nRx: amoxicillin 500mg\nSig: 1 tab tid"
 
     rc, calls = run(
         [str(img), "ollama/llava", "--base", str(tmp_path), "--output-root", str(root)],
         monkeypatch,
-        content=content,
+        completion=two_call(transcribe=transcription, extract=json.dumps(fields)),
     )
 
     assert rc == 0
@@ -194,51 +223,131 @@ def test_main_writes_envelope_with_parsed_fields(tmp_path, monkeypatch, ollama_o
     assert env["technique"] == "vlm"
     assert env["model"] == "ollama/llava"
     assert env["filename"] == "scan.jpg"
+    # "what the VLM sees" vs "what our schema captured"
+    assert env["raw_text"] == transcription
     assert env["fields"] == fields
-    assert env["raw_text"] == content
-    assert env["duration_sec"] >= 0.0
     assert env["timestamp"]
 
-    # the model string is passed straight through to litellm
-    assert len(calls) == 1
-    assert calls[0]["model"] == "ollama/llava"
-    # the call is pinned to the same Ollama endpoint preflight verified
-    assert calls[0]["api_base"] == vlm_read._ollama_base()
-    # the image rides along as a data URI in the vision message
-    blob = json.dumps(calls[0]["messages"])
-    assert "data:image/jpeg;base64," in blob
+    # two calls: transcribe first, extract second
+    assert len(calls) == 2
+    assert _is_transcribe_call(calls[0])
+    assert not _is_transcribe_call(calls[1])
+    for call in calls:
+        assert call["model"] == "ollama/llava"
+        assert call["api_base"] == vlm_read._ollama_base()
+        assert "data:image/jpeg;base64," in json.dumps(call["messages"])
+
+    # a duration per call, and duration_sec is their total
+    assert set(env["durations"]) == {"transcribe", "extract"}
+    assert env["duration_sec"] == pytest.approx(sum(env["durations"].values()))
 
 
-def test_main_strips_fenced_json(tmp_path, monkeypatch, ollama_ok):
+def test_main_raw_text_is_never_a_json_blob_on_default_run(tmp_path, monkeypatch, ollama_ok):
+    """AC #4: even when extraction replies with fenced JSON, raw_text stays the
+    plain-text transcription — the escaped-blob problem is gone."""
     img = make_image(tmp_path)
     root = tmp_path / "output"
+    transcription = "Amoxicillin 500 mg, one tablet three times daily."
+
     rc, _ = run(
         [str(img), "ollama/llava", "--base", str(tmp_path), "--output-root", str(root)],
         monkeypatch,
-        content='```json\n{"patient_name": "Jane"}\n```',
+        completion=two_call(
+            transcribe=transcription, extract='```json\n{"patient_name": "Jane"}\n```'
+        ),
     )
     assert rc == 0
-    dest = root / "sample-data" / "scan.vlm.ollama-llava.json"
-    assert json.loads(dest.read_text())["fields"] == {"patient_name": "Jane"}
+    env = json.loads((root / "sample-data" / "scan.vlm.ollama-llava.json").read_text())
+    assert env["fields"] == {"patient_name": "Jane"}  # fenced JSON still parsed
+    assert env["raw_text"] == transcription
+    assert "```" not in env["raw_text"]
 
 
-def test_main_unparseable_falls_back_but_writes(tmp_path, monkeypatch, ollama_ok, capsys):
+def test_main_default_unparseable_extraction_keeps_transcription(
+    tmp_path, monkeypatch, ollama_ok, capsys
+):
+    """On a default run, an unparseable extraction reply → empty fields, but
+    raw_text remains the transcription (not the failed JSON)."""
+    img = make_image(tmp_path)
+    root = tmp_path / "output"
+    transcription = "Patient: John Q. Public"
+
+    rc, _ = run(
+        [str(img), "ollama/llava", "--base", str(tmp_path), "--output-root", str(root)],
+        monkeypatch,
+        completion=two_call(transcribe=transcription, extract="I cannot read this clearly."),
+    )
+
+    assert rc == 0
+    env = json.loads((root / "sample-data" / "scan.vlm.ollama-llava.json").read_text())
+    assert env["fields"] == {}
+    assert env["raw_text"] == transcription
+    assert "parse" in capsys.readouterr().err.lower()  # warned
+
+
+# --------------------------------------------------------------------------- #
+# main() — --no-transcribe (single extraction call)
+# --------------------------------------------------------------------------- #
+
+
+def test_main_no_transcribe_single_extraction_call(tmp_path, monkeypatch, ollama_ok):
+    img = make_image(tmp_path)
+    root = tmp_path / "output"
+    fields = {"patient_name": "Jane"}
+
+    rc, calls = run(
+        [
+            str(img),
+            "ollama/llava",
+            "--no-transcribe",
+            "--base",
+            str(tmp_path),
+            "--output-root",
+            str(root),
+        ],
+        monkeypatch,
+        completion=two_call(extract=json.dumps(fields)),
+    )
+
+    assert rc == 0
+    env = json.loads((root / "sample-data" / "scan.vlm.ollama-llava.json").read_text())
+    # single (extraction) call; no transcription performed
+    assert len(calls) == 1
+    assert not _is_transcribe_call(calls[0])
+    assert env["fields"] == fields
+    assert env["raw_text"] == ""  # nothing transcribed
+    assert env["durations"] == {}  # single-call run carries no per-call breakdown
+    assert env["duration_sec"] >= 0.0
+
+
+def test_main_no_transcribe_unparseable_keeps_reply_as_raw_text(
+    tmp_path, monkeypatch, ollama_ok, capsys
+):
+    """--no-transcribe with an unparseable extraction reply: preserve
+    'never lose output' by keeping the reply in raw_text."""
     img = make_image(tmp_path)
     root = tmp_path / "output"
     prose = "I'm unable to read this prescription clearly."
 
     rc, _ = run(
-        [str(img), "ollama/llava", "--base", str(tmp_path), "--output-root", str(root)],
+        [
+            str(img),
+            "ollama/llava",
+            "--no-transcribe",
+            "--base",
+            str(tmp_path),
+            "--output-root",
+            str(root),
+        ],
         monkeypatch,
-        content=prose,
+        completion=two_call(extract=prose),
     )
 
-    assert rc == 0  # best-effort: never lose the run
-    dest = root / "sample-data" / "scan.vlm.ollama-llava.json"
-    env = json.loads(dest.read_text())
+    assert rc == 0
+    env = json.loads((root / "sample-data" / "scan.vlm.ollama-llava.json").read_text())
     assert env["fields"] == {}
     assert env["raw_text"] == prose
-    assert "parse" in capsys.readouterr().err.lower()  # warned
+    assert "parse" in capsys.readouterr().err.lower()
 
 
 # --------------------------------------------------------------------------- #
@@ -333,8 +442,8 @@ def test_main_passes_default_num_ctx(tmp_path, monkeypatch, ollama_ok):
         monkeypatch,
     )
     assert rc == 0
-    # the context window is forwarded to Ollama so image + answer fit
-    assert calls[0]["num_ctx"] == vlm_read.DEFAULT_NUM_CTX
+    # the context window is forwarded to Ollama on every call so image + answer fit
+    assert calls and all(c["num_ctx"] == vlm_read.DEFAULT_NUM_CTX for c in calls)
 
 
 def test_main_num_ctx_override(tmp_path, monkeypatch, ollama_ok):
@@ -353,7 +462,7 @@ def test_main_num_ctx_override(tmp_path, monkeypatch, ollama_ok):
         monkeypatch,
     )
     assert rc == 0
-    assert calls[0]["num_ctx"] == 4096
+    assert calls and all(c["num_ctx"] == 4096 for c in calls)
 
 
 def test_main_warns_when_truncated(tmp_path, monkeypatch, ollama_ok, capsys):

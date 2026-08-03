@@ -25,7 +25,8 @@ import time
 import urllib.request
 from pathlib import Path
 
-from medical_ocr.vlm_read import PROMPT, _parse_fields  # reuse the real prompt/parser
+# reuse the real extraction prompt/parser (this bench measures the extract call)
+from medical_ocr.vlm_read import EXTRACT_PROMPT, _parse_fields
 
 BASE = os.environ.get("OLLAMA_API_BASE") or "http://localhost:11434"
 IMAGE = Path("sample-data/01.jpg")  # the 2 MB image that exposed the bug
@@ -44,7 +45,7 @@ RESULTS = Path("/tmp/bench_results.jsonl")
 def chat(model: str, image_b64: str, num_ctx: int | None) -> dict:
     payload: dict = {
         "model": model,
-        "messages": [{"role": "user", "content": PROMPT, "images": [image_b64]}],
+        "messages": [{"role": "user", "content": EXTRACT_PROMPT, "images": [image_b64]}],
         "stream": False,
     }
     if num_ctx is not None:
