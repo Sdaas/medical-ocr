@@ -41,6 +41,7 @@ _ENVELOPE_ORDER = (
     "technique",
     "model",
     "duration_sec",
+    "durations",
     "timestamp",
     "raw_text",
     "fields",
@@ -58,6 +59,12 @@ class Envelope:
 
     ``model`` is ``None`` for pure OCR (e.g. Surya). ``fields`` is an open dict —
     the medical taxonomy is a convention to converge, not a hard schema.
+
+    ``duration_sec`` is the total wall-clock for the run. ``durations`` is an
+    optional per-call breakdown for backends that make more than one model call
+    (e.g. VLM's transcribe + extract → ``{"transcribe": …, "extract": …}``); it
+    stays empty for single-call/pure-OCR backends, so every envelope keeps the
+    same shape.
     """
 
     filename: str
@@ -66,6 +73,7 @@ class Envelope:
     raw_text: str
     fields: dict[str, Any]
     duration_sec: float = 0.0
+    durations: dict[str, float] = field(default_factory=dict)
     timestamp: str = field(default_factory=_now_iso)
 
     def to_dict(self) -> dict[str, Any]:

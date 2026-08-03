@@ -26,6 +26,7 @@ ENVELOPE_KEYS = {
     "technique",
     "model",
     "duration_sec",
+    "durations",
     "timestamp",
     "raw_text",
     "fields",
@@ -52,6 +53,8 @@ def test_envelope_to_dict_has_exact_adr0002_keys():
 def test_envelope_defaults_duration_and_timestamp():
     env = make_env()
     assert env.duration_sec == 0.0
+    # per-call durations default to an empty dict (single-call / pure-OCR backends)
+    assert env.durations == {}
     # timestamp defaults to a parseable ISO-8601 string
     assert isinstance(env.timestamp, str) and env.timestamp
     datetime.fromisoformat(env.timestamp)  # must not raise
@@ -60,6 +63,13 @@ def test_envelope_defaults_duration_and_timestamp():
 def test_envelope_round_trips():
     env = make_env(duration_sec=3.2)
     assert common.Envelope.from_dict(env.to_dict()) == env
+
+
+def test_envelope_carries_per_call_durations():
+    env = make_env(duration_sec=3.3, durations={"transcribe": 1.2, "extract": 2.1})
+    d = env.to_dict()
+    assert d["durations"] == {"transcribe": 1.2, "extract": 2.1}
+    assert common.Envelope.from_dict(d) == env
 
 
 def test_envelope_model_may_be_none_for_pure_ocr():

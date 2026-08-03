@@ -4,10 +4,13 @@ Usage::
 
     vlm-read <image> <model> [--output-root DIR] [--base DIR] [-v]
 
-Sends the image to ``model`` through LiteLLM (ADR-0001), times the call, and
-writes an ADR-0002 envelope via :mod:`medical_ocr.common`. The model reply is
-best-effort parsed into the envelope's structured ``fields``; the full reply is
-always kept in ``raw_text`` so nothing is lost.
+Makes **two** focused VLM calls through LiteLLM (ADR-0001) into one ADR-0002
+envelope (issue #13): call 1 *transcribes* the note as plain text → ``raw_text``
+("what the VLM sees"); call 2 *extracts* structured data → parsed into ``fields``
+("what our schema captured"). Each call is timed separately (``durations``); the
+total is ``duration_sec``. ``--no-transcribe`` skips call 1 (extraction only) and
+falls back to keeping the extraction reply in ``raw_text`` only if it fails to
+parse, so a run never loses output.
 
 **Scope (F2):** only local **Ollama** models (``ollama/<model>`` or
 ``ollama_chat/<model>``) are supported today. Cloud providers are stubbed and
@@ -42,9 +45,23 @@ CLOUD_ISSUE = "#5"
 # is room for the image, the reasoning, and the answer.
 DEFAULT_NUM_CTX = 16384
 
-# Starter field set (ADR-0002 example). Suggested, not enforced — the model may
-# add or omit keys; scoring and other backends converge on these names.
-PROMPT = """\
+# Call 1 — transcribe. Ask the VLM to faithfully read *everything* on the note
+# as plain text. Stored in `raw_text`: "what the VLM sees", independent of our
+# schema. Comparing this against `fields` tells a perception gap (unreadable) from
+# a schema gap (read but not captured under ADR-0002). See issue #13.
+TRANSCRIBE_PROMPT = """\
+You are reading a photo of a hand-written medical prescription. Transcribe
+EVERYTHING you can see on the note — every word, number, and marking — as
+faithfully as possible, in plain text, preserving the layout line by line.
+
+Do not interpret, summarize, correct, or add commentary. Output only the
+transcription.
+"""
+
+# Call 2 — extract. The ADR-0002 extraction prompt (unchanged): its JSON reply is
+# parsed into the envelope's `fields`. Starter field set is suggested, not enforced
+# — the model may add or omit keys; scoring and other backends converge on these.
+EXTRACT_PROMPT = """\
 You are extracting structured data from a photo of a hand-written medical
 prescription. Return ONLY a JSON object with the fields you can read.
 
@@ -247,8 +264,71 @@ def build_parser() -> argparse.ArgumentParser:
             "output is truncated on large images or reasoning models."
         ),
     )
+    parser.add_argument(
+        "--no-transcribe",
+        action="store_true",
+        help=(
+            "skip the plain-text transcription call (call 1); extract only. "
+            "raw_text is left empty unless the extraction reply fails to parse."
+        ),
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="verbose output")
     return parser
+
+
+def _vlm_call(
+    model: str,
+    messages: list[dict],
+    *,
+    api_base: str,
+    num_ctx: int,
+    label: str,
+) -> tuple[str, float]:
+    """Make one VLM completion and return ``(text, duration_sec)``.
+
+    Pins the endpoint to the one preflight verified (so LiteLLM's default can't
+    reroute) and forwards ``num_ctx`` so the window fits image + reasoning +
+    answer. Warns on truncation, and — honouring "never lose output" — falls back
+    to the reasoning channel if the model answered only there. ``label``
+    ("transcribe"/"extract") tags the warnings so the user knows which call.
+    """
+    try:
+        with Timer() as timer:
+            response = completion(
+                model=model,
+                messages=messages,
+                api_base=api_base,
+                num_ctx=num_ctx,
+            )
+    except Exception as exc:  # noqa: BLE001 — surface any provider error as exit 1
+        raise VlmReadError(f"model call failed for {model}: {exc}", code=1) from exc
+
+    choice = response.choices[0]
+    text = choice.message.content or ""
+    # Reasoning models put their "thinking" here; LiteLLM surfaces it separately.
+    reasoning = getattr(choice.message, "reasoning_content", None) or ""
+
+    # If the model was cut off (finish_reason "length"), the answer is likely
+    # truncated or — for a reasoning model that never got to answer — empty.
+    if getattr(choice, "finish_reason", None) == "length":
+        print(
+            f"vlm-read: warning: {label} response hit the context limit "
+            f"(num_ctx={num_ctx}); output may be truncated — retry with a larger "
+            "--num-ctx.",
+            file=sys.stderr,
+        )
+
+    # Never lose the model's output: if it answered only in its reasoning channel,
+    # fall back to that so the text is not silently empty.
+    if not text and reasoning:
+        print(
+            f"vlm-read: warning: {label} returned an empty answer but non-empty "
+            "reasoning; keeping the reasoning.",
+            file=sys.stderr,
+        )
+        text = reasoning
+
+    return text, timer.duration_sec
 
 
 def _run(args: argparse.Namespace) -> None:
@@ -261,62 +341,57 @@ def _run(args: argparse.Namespace) -> None:
     if args.verbose:
         print(f"vlm-read: sending {image} to {args.model}", file=sys.stderr)
 
-    messages = _build_messages(PROMPT, _image_data_uri(image))
-    try:
-        with Timer() as timer:
-            # Pin the endpoint to the one preflight verified, so LiteLLM's own
-            # default can't route the call to a different Ollama server. num_ctx
-            # is forwarded to Ollama so the window fits image + reasoning + answer.
-            response = completion(
-                model=args.model,
-                messages=messages,
-                api_base=_ollama_base(),
-                num_ctx=args.num_ctx,
-            )
-    except Exception as exc:  # noqa: BLE001 — surface any provider error as exit 1
-        raise VlmReadError(f"model call failed for {args.model}: {exc}", code=1) from exc
+    data_uri = _image_data_uri(image)
+    api_base = _ollama_base()
+    transcribe = not args.no_transcribe
+    durations: dict[str, float] = {}
 
-    choice = response.choices[0]
-    raw_text = choice.message.content or ""
-    # Reasoning models put their "thinking" here; LiteLLM surfaces it separately.
-    reasoning = getattr(choice.message, "reasoning_content", None) or ""
-
-    # If the model was cut off (finish_reason "length"), the answer is likely
-    # truncated or — for a reasoning model that never got to answer — empty.
-    if getattr(choice, "finish_reason", None) == "length":
-        print(
-            f"vlm-read: warning: response hit the context limit (num_ctx={args.num_ctx}); "
-            "output may be truncated — retry with a larger --num-ctx.",
-            file=sys.stderr,
+    # Call 1 — transcribe (default): plain-text "what the VLM sees" → raw_text.
+    raw_text = ""
+    if transcribe:
+        raw_text, durations["transcribe"] = _vlm_call(
+            args.model,
+            _build_messages(TRANSCRIBE_PROMPT, data_uri),
+            api_base=api_base,
+            num_ctx=args.num_ctx,
+            label="transcribe",
         )
 
-    # Never lose the model's output: if it answered only in its reasoning channel,
-    # fall back to that so raw_text is not silently empty (honours this module's
-    # "the full reply is always kept in raw_text" promise).
-    if not raw_text and reasoning:
-        print(
-            "vlm-read: warning: model returned an empty answer but non-empty reasoning; "
-            "keeping the reasoning as raw_text.",
-            file=sys.stderr,
-        )
-        raw_text = reasoning
+    # Call 2 — extract: JSON reply parsed into `fields` ("what our schema captured").
+    extract_text, durations["extract"] = _vlm_call(
+        args.model,
+        _build_messages(EXTRACT_PROMPT, data_uri),
+        api_base=api_base,
+        num_ctx=args.num_ctx,
+        label="extract",
+    )
 
-    fields = _parse_fields(raw_text)
+    fields = _parse_fields(extract_text)
     if fields is None:
         print(
-            "vlm-read: warning: could not parse JSON fields from the model reply; "
-            "writing raw_text only.",
+            "vlm-read: warning: could not parse JSON fields from the extraction "
+            "reply; writing empty fields.",
             file=sys.stderr,
         )
         fields = {}
+        # Preserve "never lose output": with no transcription there is nothing else
+        # in raw_text, so keep the unparseable extraction reply there. On a normal
+        # run raw_text already holds the transcription, which we must not clobber
+        # (AC #4: raw_text is never a fenced/escaped JSON blob on a normal run).
+        if not transcribe:
+            raw_text = extract_text
 
+    # `durations` records a number per call performed; the breakdown is only
+    # meaningful when more than one call ran, so a single-call run leaves it empty.
+    total = sum(durations.values())
     envelope = Envelope(
         filename=image.name,
         technique="vlm",
         model=args.model,
         raw_text=raw_text,
         fields=fields,
-        duration_sec=timer.duration_sec,
+        duration_sec=total,
+        durations=durations if transcribe else {},
     )
     dest = write_envelope(envelope, image, base=args.base, output_root=args.output_root)
     print(dest)
