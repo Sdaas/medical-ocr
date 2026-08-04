@@ -54,19 +54,15 @@ class ClaudeEnvelopeError(Exception):
 # --------------------------------------------------------------------------- #
 
 
-def _read_payload(source: Path | None) -> dict[str, Any]:
-    """Load and structurally validate Claude's JSON payload from a file or stdin.
+def _validate_payload(data: Any) -> dict[str, Any]:
+    """Structurally validate a Claude extraction payload; return it unchanged.
 
     Enforces the ADR-0002 shape the envelope depends on: a JSON object whose
     ``fields`` (if present) is itself an object — never an escaped fenced blob —
-    and whose ``raw_text`` (if present) is a string.
+    and whose ``raw_text`` (if present) is a string. Shared by the stdin/file CLI
+    (``_read_payload``) and any in-process caller (``write_from_payload``), so both
+    entry points reject the same malformed input identically.
     """
-    text = source.read_text() if source is not None else sys.stdin.read()
-    try:
-        data = json.loads(text)
-    except (json.JSONDecodeError, ValueError) as exc:
-        raise ClaudeEnvelopeError(f"payload is not valid JSON: {exc}") from exc
-
     if not isinstance(data, dict):
         raise ClaudeEnvelopeError("payload must be a JSON object with raw_text and fields")
 
@@ -87,6 +83,49 @@ def _read_payload(source: Path | None) -> dict[str, Any]:
         raise ClaudeEnvelopeError("payload 'duration_sec' must be a number")
 
     return data
+
+
+def _read_payload(source: Path | None) -> dict[str, Any]:
+    """Load and validate Claude's JSON payload from a file or stdin."""
+    text = source.read_text() if source is not None else sys.stdin.read()
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise ClaudeEnvelopeError(f"payload is not valid JSON: {exc}") from exc
+    return _validate_payload(data)
+
+
+def write_from_payload(
+    image: str | Path,
+    *,
+    model: str,
+    payload: dict[str, Any],
+    duration_sec: float | None = None,
+    base: str | Path | None = None,
+    output_root: str | Path | None = None,
+) -> Path:
+    """Validate ``payload`` and write it as a ``technique="claude"`` envelope.
+
+    The single seam other Claude entry points reuse (the stdin/file CLI here, and
+    ``claude-extract``) so the envelope shape and validation live in exactly one
+    place. ``model`` is recorded verbatim (never null — Claude is not pure OCR).
+    ``duration_sec``, if given, overrides the payload's (e.g. ``claude-extract``
+    passes the wall-clock the ``claude`` CLI measured); otherwise the payload's
+    value is used, defaulting to ``0.0`` for an interactive run. ``durations`` is
+    always ``{}`` — a Claude run has no per-call breakdown. Returns the path written.
+    """
+    _validate_payload(payload)
+    dur = duration_sec if duration_sec is not None else float(payload.get("duration_sec", 0.0))
+    envelope = Envelope(
+        filename=Path(image).name,
+        technique="claude",
+        model=model,
+        raw_text=payload.get("raw_text", ""),
+        fields=payload.get("fields", {}),
+        duration_sec=dur,
+        durations={},
+    )
+    return write_envelope(envelope, image, base=base, output_root=output_root)
 
 
 # --------------------------------------------------------------------------- #
@@ -154,17 +193,9 @@ def _run(args: argparse.Namespace) -> None:
             f"claude-envelope: recording {image} as technique=claude model={model}", file=sys.stderr
         )
 
-    envelope = Envelope(
-        filename=image.name,
-        technique="claude",
-        model=model,
-        raw_text=payload.get("raw_text", ""),
-        fields=payload.get("fields", {}),
-        # Best-effort for an interactive run: 0 when unknown; no per-call breakdown.
-        duration_sec=float(payload.get("duration_sec", 0.0)),
-        durations={},
+    dest = write_from_payload(
+        image, model=model, payload=payload, base=args.base, output_root=args.output_root
     )
-    dest = write_envelope(envelope, image, base=args.base, output_root=args.output_root)
     print(dest)
 
 

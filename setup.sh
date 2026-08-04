@@ -23,6 +23,13 @@ DEPS=(
 	"uv|uv|uv (Python)"
 )
 
+# Optional runtime tools — NOT required to build or test, but some features need
+# them. Reported as advisory only; a missing one never changes the exit status.
+# One per line: "command|human name|used by".
+OPTIONAL_TOOLS=(
+	"claude|Claude Code CLI|claude-extract (Claude in-session extraction)"
+)
+
 ASSUME_YES=false
 
 usage() { sed -n '3,15p' "$0" | sed 's/^# \{0,1\}//'; }
@@ -51,6 +58,17 @@ for entry in "${DEPS[@]}"; do
 	else
 		printf '    \xe2\x9c\x97 %s (%s) — missing\n' "$name" "$cmd"
 		missing+=("$entry")
+	fi
+done
+
+# --- advisory: optional runtime tools (never blocks setup) ------------------
+echo "==> Checking optional runtime tools (advisory)"
+for entry in "${OPTIONAL_TOOLS[@]}"; do
+	IFS='|' read -r cmd name usedby <<<"$entry"
+	if have "$cmd"; then
+		printf '    \xe2\x9c\x93 %s (%s)\n' "$name" "$cmd"
+	else
+		printf '    \xe2\x97\x8b %s (%s) — not found; needed only for %s\n' "$name" "$cmd" "$usedby"
 	fi
 done
 
