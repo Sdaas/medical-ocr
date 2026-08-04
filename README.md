@@ -45,7 +45,7 @@ Run `medical-ocr --help` for usage.
 
 ### Running the CLI commands
 
-`medical-ocr` and `vlm-read` are console-script entry points installed into the
+`medical-ocr`, `vlm-read`, and `claude-envelope` are console-script entry points installed into the
 project's virtualenv (`.venv/`) by `setup.sh` — they are **not** standalone files
 in the repo. They only appear on your `PATH` once that venv is active. Pick one:
 
@@ -109,6 +109,39 @@ generous default; override it with `--num-ctx` if you still see truncation
 runs out of room before writing a final answer, its thinking is kept (as that
 call's text) so nothing is lost. Notes on the models tested so far live in
 [`docs/retrospectives/2026-08-02-vlm-read-bugs.md`](docs/retrospectives/2026-08-02-vlm-read-bugs.md).
+
+### Claude — extract in-session (a convention, not a script)
+
+Claude is a backend **without its own executable**: instead of calling an LLM from
+a script, *you* have Claude read the image in a Claude session and then persist its
+answer as the same envelope the CLIs write. The full procedure — the canonical
+prompt, the envelope convention, and a worked example — lives in
+[`docs/claude-extraction-prompt.md`](docs/claude-extraction-prompt.md). In short:
+
+1. **Invoke the prompt.** Open a Claude session (claude.ai, Claude Code, or the
+   API), attach the prescription image, and send the canonical prompt from that
+   doc verbatim. Claude replies with **one JSON object** — `raw_text` (a faithful
+   transcription) plus `fields` (the structured extraction), the same split as
+   `vlm-read`.
+2. **Persist it.** Save that JSON reply to a file (or pipe it), then run the
+   `claude-envelope` helper — it makes **no** LLM call, it only writes the
+   envelope through the shared `common` seam:
+
+   ```bash
+   claude-envelope sample-data/00.jpg --from answer.json
+   # or straight from stdin:
+   claude-envelope sample-data/00.jpg < answer.json
+   ```
+
+   The envelope lands at `output/sample-data/00.claude.claude-opus-4-8.json`,
+   byte-compatible with a `vlm-read` envelope so `compare` treats it identically.
+
+**Which model, and can it be changed?** Because Claude interprets (it is not pure
+OCR), the envelope records the model id. It defaults to **`claude-opus-4-8`**;
+change it with `--model` (or a `"model"` key in the payload), e.g.
+`--model claude-sonnet-5`. The model id is part of the output filename (like
+`vlm-read`), so runs from two different Claude models never collide and can be
+compared side by side. See `claude-envelope --help` for all options.
 
 ## Developer Guide
 
