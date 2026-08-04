@@ -45,7 +45,7 @@ Run `medical-ocr --help` for usage.
 
 ### Running the CLI commands
 
-`medical-ocr`, `vlm-read`, and `claude-envelope` are console-script entry points installed into the
+`medical-ocr`, `vlm-read`, `claude-envelope`, and `claude-extract` are console-script entry points installed into the
 project's virtualenv (`.venv/`) by `setup.sh` — they are **not** standalone files
 in the repo. They only appear on your `PATH` once that venv is active. Pick one:
 
@@ -110,38 +110,44 @@ runs out of room before writing a final answer, its thinking is kept (as that
 call's text) so nothing is lost. Notes on the models tested so far live in
 [`docs/retrospectives/2026-08-02-vlm-read-bugs.md`](docs/retrospectives/2026-08-02-vlm-read-bugs.md).
 
-### Claude — extract in-session (a convention, not a script)
+### Claude — extract via `claude-extract` (one command)
 
-Claude is a backend **without its own executable**: instead of calling an LLM from
-a script, *you* have Claude read the image in a Claude session and then persist its
-answer as the same envelope the CLIs write. The full procedure — the canonical
-prompt, the envelope convention, and a worked example — lives in
-[`docs/claude-extraction-prompt.md`](docs/claude-extraction-prompt.md). In short:
+If you have the [`claude` CLI](https://claude.com/claude-code) installed and signed
+in, one command does the whole thing — read the image and write the envelope:
 
-1. **Invoke the prompt.** Open a Claude session (claude.ai, Claude Code, or the
-   API), attach the prescription image, and send the canonical prompt from that
-   doc verbatim. Claude replies with **one JSON object** — `raw_text` (a faithful
-   transcription) plus `fields` (the structured extraction), the same split as
-   `vlm-read`.
-2. **Persist it.** Save that JSON reply to a file (or pipe it), then run the
-   `claude-envelope` helper — it makes **no** LLM call, it only writes the
-   envelope through the shared `common` seam:
+```bash
+claude-extract sample-data/00.jpg
+```
 
-   ```bash
-   claude-envelope sample-data/00.jpg --from answer.json
-   # or straight from stdin:
-   claude-envelope sample-data/00.jpg < answer.json
-   ```
-
-   The envelope lands at `output/sample-data/00.claude.claude-opus-4-8.json`,
-   byte-compatible with a `vlm-read` envelope so `compare` treats it identically.
+It runs headless `claude -p` with the canonical prompt, parses the
+`{raw_text, fields}` reply, and writes
+`output/sample-data/00.claude.claude-opus-4-8.json` — byte-compatible with a
+`vlm-read` envelope, so `compare` treats it identically. Each run makes a
+**billable** Claude call (see ADR-0005). `duration_sec` is the real wall-clock the
+CLI reports.
 
 **Which model, and can it be changed?** Because Claude interprets (it is not pure
 OCR), the envelope records the model id. It defaults to **`claude-opus-4-8`**;
-change it with `--model` (or a `"model"` key in the payload), e.g.
-`--model claude-sonnet-5`. The model id is part of the output filename (like
-`vlm-read`), so runs from two different Claude models never collide and can be
-compared side by side. See `claude-envelope --help` for all options.
+change it with `--model` (e.g. `--model claude-sonnet-5`) — the value is passed to
+`claude --model` and recorded. The model id is part of the output filename (like
+`vlm-read`), so runs from different Claude models never collide and can be compared
+side by side. See `claude-extract --help` for all options.
+
+#### Without the `claude` CLI — the manual convention
+
+`claude-extract` is a convenience over a backend that also works **by hand**, with
+no CLI dependency. You have Claude read the image in any session and then persist
+the reply with `claude-envelope`. The full procedure — canonical prompt, envelope
+convention, worked example — is in
+[`docs/claude-extraction-prompt.md`](docs/claude-extraction-prompt.md):
+
+```bash
+# Claude returns {raw_text, fields} JSON in-session; save it, then:
+claude-envelope sample-data/00.jpg --from answer.json
+claude-envelope sample-data/00.jpg < answer.json     # or via stdin
+```
+
+Both paths write the same envelope shape to the same place.
 
 ## Developer Guide
 

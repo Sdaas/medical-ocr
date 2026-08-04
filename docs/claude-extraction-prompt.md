@@ -10,6 +10,11 @@ This page is the repeatable procedure. It has three parts: the **canonical
 prompt**, the **convention** for the envelope, and the **`claude-envelope`
 helper** that writes it.
 
+> **Have the `claude` CLI?** `claude-extract <image>` (ADR-0005) automates this
+> entire page in one command — it runs headless `claude -p` with this prompt and
+> writes the envelope for you. This page remains the source of the prompt/envelope
+> shape and the fallback when the CLI isn't available. See the README.
+
 ---
 
 ## 1. The canonical prompt

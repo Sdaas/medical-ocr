@@ -26,6 +26,7 @@ Ordered by build sequence.
 | F4 | **`surya-ocr` CLI** — `surya-ocr file.jpg`; runs Surya, times, writes envelope | UC-002 | `surya-ocr` | P1 | F1 |
 | F5 | **Claude extraction convention** — documented prompt + envelope; Claude reads image in-session, saves envelope JSON to the standard path | UC-003 | Claude convention | P1 | F1 |
 | F6 | **`run-all` orchestrator** — one command runs available backends on one image, one envelope each | UC-006 | `run-all` | P2 | F2, F4, F5 |
+| F7 | **`claude-extract` CLI** — one-command Claude backend over headless `claude -p` (ADR-0005, reverses C3's "no script"); reuses the F5 prompt + `claude-envelope` writer | UC-003 | `claude-extract` | P1 | F5 |
 
 ## Sequencing rationale
 
